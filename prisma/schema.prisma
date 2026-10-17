@@ -1,0 +1,151 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SupportPath {
+  heartbreak
+  grief
+}
+
+enum Mood {
+  bad
+  numb
+  okay
+}
+
+enum LetterState {
+  draft
+  kept
+  sealed
+}
+
+/// Email is never stored in plaintext: emailHash (HMAC) for lookup, emailCipher for sending.
+model User {
+  id           String       @id @default(uuid()) @db.Uuid
+  emailHash    String       @unique
+  emailCipher  Bytes
+  wrappedKey   Bytes        /// per-user data key, wrapped by the master key (envelope encryption)
+  path         SupportPath?
+  country      String?      @db.Char(2)
+  ageConfirmed Boolean      @default(false)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  consents      Consent[]
+  refreshTokens RefreshToken[]
+  checkIns      CheckIn[]
+  journal       JournalEntry[]
+  letters       UnsentLetter[]
+  contactLog    ContactLog[]
+  feedback      Feedback[]
+}
+
+model MagicLink {
+  id          String    @id @default(uuid()) @db.Uuid
+  emailHash   String
+  emailCipher Bytes     /// sealed with the master key; needed to create the account on first sign-in
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([emailHash, createdAt])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  familyId  String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+}
+
+model Consent {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @db.Uuid
+  purpose     String
+  version     String
+  grantedAt   DateTime  @default(now())
+  withdrawnAt DateTime?
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose])
+}
+
+model CheckIn {
+  id         String   @id @db.Uuid
+  userId     String   @db.Uuid
+  mood       Mood
+  noteCipher Bytes?
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model JournalEntry {
+  id         String   @id @db.Uuid
+  userId     String   @db.Uuid
+  promptSlot String?
+  bodyCipher Bytes
+  version    Int      @default(1)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+}
+
+model UnsentLetter {
+  id              String      @id @db.Uuid
+  userId          String      @db.Uuid
+  recipientCipher Bytes
+  bodyCipher      Bytes
+  state           LetterState @default(draft)
+  version         Int         @default(1)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+}
+
+/// Heartbreak path: one row per day the user chose to log. Totals, never streaks.
+model ContactLog {
+  userId     String   @db.Uuid
+  day        DateTime @db.Date
+  contacted  Boolean
+  noteCipher Bytes?
+  updatedAt  DateTime @updatedAt
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, day])
+}
+
+model Feedback {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String?  @db.Uuid
+  toolSlot  String
+  rating    Int      @db.SmallInt
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// Anonymous by design: no user id, no text, hour-level time only.
+model SafetyEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  tier       String
+  source     String
+  locale     String?
+  hourBucket DateTime
+}
